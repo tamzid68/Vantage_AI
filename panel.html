@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metafyx AI</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="metafyx-panel">
+    <div class="panel-header">
+      <h1>Metafyx AI</h1>
+      <button id="close-panel" class="close-btn" aria-label="Close panel">×</button>
+    </div>
+
+    <div class="panel-content">
+      <!-- API Configuration Section -->
+      <section class="config-section">
+        <h2>API Configuration</h2>
+        <div class="form-group">
+          <label for="api-provider">Provider</label>
+          <select id="api-provider" class="form-control">
+            <option value="openai">OpenAI (GPT-4o)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="api-key">API Key</label>
+          <input 
+            type="password" 
+            id="api-key" 
+            class="form-control" 
+            placeholder="Enter your API key"
+          >
+          <button id="save-api-key" class="btn btn-primary">Save Key</button>
+          <button id="clear-api-key" class="btn btn-secondary">Clear</button>
+        </div>
+        <div id="api-status" class="status-message"></div>
+      </section>
+
+      <!-- Settings Section -->
+      <section class="settings-section">
+        <h2>Automation Settings</h2>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="auto-generative-ai" checked>
+            <span>Auto-check "Generative AI content"</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="auto-property-release" checked>
+            <span>Auto-set Property Release to "No"</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="auto-category" checked>
+            <span>Auto-assign Category</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Batch Processing Section -->
+      <section class="batch-section">
+        <h2>Batch Processing</h2>
+        <div class="form-group">
+          <button id="start-processing" class="btn btn-primary btn-large">
+            Start Processing
+          </button>
+          <button id="stop-processing" class="btn btn-danger btn-large" disabled>
+            Stop Processing
+          </button>
+        </div>
+        <div class="progress-container">
+          <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <div id="progress-text" class="progress-text">Ready</div>
+        </div>
+        <div id="processing-stats" class="stats">
+          <div>Processed: <span id="processed-count">0</span></div>
+          <div>Failed: <span id="failed-count">0</span></div>
+          <div>Total: <span id="total-count">0</span></div>
+        </div>
+      </section>
+
+      <!-- Bulk Actions Section -->
+      <section class="bulk-section">
+        <h2>Bulk Actions</h2>
+        <div class="form-group">
+          <button id="bulk-apply" class="btn btn-secondary">
+            Bulk Apply Settings
+          </button>
+        </div>
+      </section>
+
+      <!-- CSV Section -->
+      <section class="csv-section">
+        <h2>CSV Import/Export</h2>
+        <div class="form-group">
+          <button id="export-csv" class="btn btn-secondary">Export to CSV</button>
+          <label for="import-csv" class="btn btn-secondary file-input-label">
+            Import from CSV
+            <input type="file" id="import-csv" accept=".csv" style="display: none;">
+          </label>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
