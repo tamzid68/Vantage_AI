@@ -1,0 +1,28 @@
+{
+  "name": "metafyx-ai",
+  "version": "1.0.0",
+  "description": "AI-powered metadata generation and bulk automation tool for Adobe Stock contributors",
+  "type": "module",
+  "scripts": {
+    "lint": "echo 'No linter configured. Add ESLint if needed.'",
+    "format": "echo 'No formatter configured. Add Prettier if needed.'"
+  },
+  "keywords": [
+    "chrome-extension",
+    "adobe-stock",
+    "ai",
+    "metadata",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}

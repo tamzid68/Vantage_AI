@@ -12,8 +12,8 @@ import {
   setPropertyReleaseNo, 
   setCategory 
 } from './dom.js';
-import { getSettings, DEFAULT_SETTINGS } from './constants.js';
-import { getAPIKey } from './storage.js';
+import { DEFAULT_SETTINGS } from './constants.js';
+import { getSettings } from './storage.js';
 
 /**
  * Process a single upload item
@@ -22,53 +22,76 @@ import { getAPIKey } from './storage.js';
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 export async function processItem(item, settings) {
-  try {
-    // Get image URL
-    const imageUrl = findImageUrl(item);
-    if (!imageUrl) {
-      return { success: false, error: 'No image URL found' };
+  let retries = settings.maxRetries || 3;
+  let lastError = null;
+
+  while (retries > 0) {
+    try {
+      // Get image URL
+      const imageUrl = findImageUrl(item);
+      if (!imageUrl) {
+        return { success: false, error: 'No image URL found' };
+      }
+
+      // Generate metadata via background script
+      const response = await chrome.runtime.sendMessage({
+        action: 'generateMetadata',
+        data: { imageUrl }
+      });
+
+      if (!response || !response.success) {
+        const error = response?.error || 'Failed to generate metadata';
+        lastError = error;
+        retries--;
+        if (retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
+          continue;
+        }
+        return { success: false, error };
+      }
+
+      const { title, keywords } = response.data;
+
+      // Validate metadata
+      if (!title || !keywords || keywords.length === 0) {
+        return { success: false, error: 'Invalid metadata received' };
+      }
+
+      // Apply metadata
+      const titleSet = setTitle(item, title);
+      const keywordsSet = setKeywords(item, keywords);
+
+      if (!titleSet || !keywordsSet) {
+        return { success: false, error: 'Failed to set metadata fields' };
+      }
+
+      // Apply automation settings
+      if (settings.autoCheckGenerativeAI) {
+        checkGenerativeAI(item);
+      }
+
+      if (settings.autoSetPropertyRelease === 'no') {
+        setPropertyReleaseNo(item);
+      }
+
+      if (settings.enableCategorySelection) {
+        setCategory(item, keywords);
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('Error processing item:', error);
+      lastError = error.message;
+      retries--;
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
+        continue;
+      }
+      return { success: false, error: lastError };
     }
-
-    // Get API key
-    const apiKeyData = await getAPIKey();
-    if (!apiKeyData || !apiKeyData.key) {
-      return { success: false, error: 'API key not configured' };
-    }
-
-    // Generate metadata via background script
-    const response = await chrome.runtime.sendMessage({
-      action: 'generateMetadata',
-      data: { imageUrl }
-    });
-
-    if (!response.success) {
-      return { success: false, error: response.error || 'Failed to generate metadata' };
-    }
-
-    const { title, keywords } = response.data;
-
-    // Apply metadata
-    setTitle(item, title);
-    setKeywords(item, keywords);
-
-    // Apply automation settings
-    if (settings.autoCheckGenerativeAI) {
-      checkGenerativeAI(item);
-    }
-
-    if (settings.autoSetPropertyRelease === 'no') {
-      setPropertyReleaseNo(item);
-    }
-
-    if (settings.enableCategorySelection) {
-      setCategory(item, keywords);
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error processing item:', error);
-    return { success: false, error: error.message };
   }
+
+  return { success: false, error: lastError || 'Max retries exceeded' };
 }
 
 /**
@@ -104,6 +127,11 @@ export async function processBatch(onProgress, shouldStop) {
     // Call progress callback
     if (onProgress) {
       onProgress(processed, total, item, result);
+    }
+
+    // Track failed count for callback
+    if (!result.success) {
+      // Failed count is tracked in the callback
     }
 
     // Delay between items to avoid rate limiting

@@ -20,6 +20,7 @@ class MetafyxPanel {
   async init() {
     await this.loadSettings();
     this.setupEventListeners();
+    this.setupMessageListener();
     this.checkAPIKeyStatus();
   }
 
@@ -188,6 +189,53 @@ class MetafyxPanel {
     }, '*');
     
     this.updateProgress(0, 'Starting...');
+  }
+
+  /**
+   * Setup message listener from content script
+   */
+  setupMessageListener() {
+    window.addEventListener('message', (event) => {
+      if (event.data.source === 'metafyx-content') {
+        const { type, data } = event.data;
+        
+        switch (type) {
+          case 'processingStarted':
+            this.totalCount = data.total;
+            this.updateProgress(0, `Processing ${data.total} items...`);
+            break;
+          case 'progress':
+            this.processedCount = data.processed;
+            this.failedCount = (this.failedCount || 0) + (data.failed || 0);
+            this.updateProgress(data.percentage, `Processing... ${data.processed}/${data.total}`);
+            break;
+          case 'processingComplete':
+            this.isProcessing = false;
+            this.processedCount = data.processed;
+            this.failedCount = data.failed;
+            document.getElementById('start-processing').disabled = false;
+            document.getElementById('stop-processing').disabled = true;
+            this.updateProgress(100, `Complete! Processed: ${data.processed}, Failed: ${data.failed}`);
+            this.showStatus(`Processing complete: ${data.processed} succeeded, ${data.failed} failed`, 'success');
+            break;
+          case 'error':
+            this.isProcessing = false;
+            document.getElementById('start-processing').disabled = false;
+            document.getElementById('stop-processing').disabled = true;
+            this.showStatus(data.message || 'An error occurred', 'error');
+            break;
+          case 'bulkApplyComplete':
+            this.showStatus('Bulk apply completed successfully', 'success');
+            break;
+          case 'exportComplete':
+            this.showStatus('CSV exported successfully', 'success');
+            break;
+          case 'importComplete':
+            this.showStatus(`CSV imported: ${data.imported} items`, 'success');
+            break;
+        }
+      }
+    });
   }
 
   /**

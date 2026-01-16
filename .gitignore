@@ -1,0 +1,30 @@
+# Chrome Extension
+*.crx
+*.pem
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node modules (if using build tools)
+node_modules/
+
+# Build outputs
+dist/
+build/

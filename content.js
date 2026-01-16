@@ -3,7 +3,14 @@
  * Injects UI panel into Adobe Stock New Uploads page
  */
 
-import { findUploadItems } from './utils/dom.js';
+import { 
+  findUploadItems, 
+  findImageUrl, 
+  findTitleField, 
+  findKeywordsField,
+  setTitle, 
+  setKeywords 
+} from './utils/dom.js';
 import { processBatch, bulkApplySettings } from './utils/processor.js';
 import { exportToCSV, downloadCSV, readCSVFile } from './utils/csv.js';
 import { getSettings } from './utils/storage.js';
@@ -85,11 +92,165 @@ function init() {
 // Start initialization
 init();
 
-// Listen for messages from panel
-window.addEventListener('message', (event) => {
+// Listen for messages from panel iframe
+window.addEventListener('message', async (event) => {
   // Verify message is from our extension
   if (event.data.source === 'metafyx-panel') {
-    // Handle panel messages if needed
-    console.log('Message from panel:', event.data);
+    const { action } = event.data;
+    
+    try {
+      switch (action) {
+        case 'startProcessing':
+          await handleStartProcessing();
+          break;
+        case 'stopProcessing':
+          shouldStopProcessing = true;
+          break;
+        case 'bulkApply':
+          await handleBulkApply();
+          break;
+        case 'exportCSV':
+          await handleExportCSV();
+          break;
+        case 'importCSV':
+          await handleImportCSV(event.data.file);
+          break;
+        default:
+          console.warn('Unknown action:', action);
+      }
+    } catch (error) {
+      console.error('Error handling panel action:', error);
+      sendMessageToPanel('error', { message: error.message });
+    }
   }
 });
+
+/**
+ * Handle start processing action
+ */
+async function handleStartProcessing() {
+  if (isProcessing) {
+    sendMessageToPanel('error', { message: 'Processing already in progress' });
+    return;
+  }
+
+  isProcessing = true;
+  shouldStopProcessing = false;
+
+  try {
+    const items = findUploadItems();
+    const total = items.length;
+    
+    sendMessageToPanel('processingStarted', { total });
+
+    let failedCount = 0;
+    const result = await processBatch(
+      (processed, total, currentItem, result) => {
+        if (!result.success) {
+          failedCount++;
+        }
+        const percentage = Math.round((processed / total) * 100);
+        sendMessageToPanel('progress', {
+          processed,
+          total,
+          percentage,
+          current: result.success ? 'Success' : result.error,
+          failed: failedCount
+        });
+      },
+      () => shouldStopProcessing
+    );
+
+    sendMessageToPanel('processingComplete', result);
+  } catch (error) {
+    sendMessageToPanel('error', { message: error.message });
+  } finally {
+    isProcessing = false;
+  }
+}
+
+/**
+ * Handle bulk apply action
+ */
+async function handleBulkApply() {
+  try {
+    const settings = await getSettings();
+    await bulkApplySettings(settings);
+    sendMessageToPanel('bulkApplyComplete', { success: true });
+  } catch (error) {
+    sendMessageToPanel('error', { message: error.message });
+  }
+}
+
+/**
+ * Handle CSV export
+ */
+async function handleExportCSV() {
+  try {
+    const items = findUploadItems();
+    const exportData = items.map((item, index) => {
+      const imageUrl = findImageUrl(item);
+      const titleField = findTitleField(item);
+      const keywordsField = findKeywordsField(item);
+      
+      return {
+        id: `item-${index}`,
+        title: titleField?.value || '',
+        keywords: keywordsField?.value ? keywordsField.value.split(',').map(k => k.trim()) : [],
+        imageUrl: imageUrl || '',
+        generativeAI: false, // Would need to check checkbox state
+        propertyRelease: '',
+        category: ''
+      };
+    });
+
+    const csvContent = exportToCSV(exportData);
+    downloadCSV(csvContent, `metafyx-export-${Date.now()}.csv`);
+    sendMessageToPanel('exportComplete', { success: true });
+  } catch (error) {
+    sendMessageToPanel('error', { message: error.message });
+  }
+}
+
+/**
+ * Handle CSV import
+ */
+async function handleImportCSV(file) {
+  if (!file) return;
+  
+  try {
+    const items = await readCSVFile(file);
+    const uploadItems = findUploadItems();
+    
+    // Match items by index or ID
+    for (let i = 0; i < Math.min(items.length, uploadItems.length); i++) {
+      const item = items[i];
+      const uploadItem = uploadItems[i];
+      
+      if (item.title) {
+        setTitle(uploadItem, item.title);
+      }
+      if (item.keywords && item.keywords.length > 0) {
+        setKeywords(uploadItem, item.keywords);
+      }
+    }
+    
+    sendMessageToPanel('importComplete', { success: true, imported: items.length });
+  } catch (error) {
+    sendMessageToPanel('error', { message: error.message });
+  }
+}
+
+/**
+ * Send message to panel iframe
+ */
+function sendMessageToPanel(type, data) {
+  const iframe = document.getElementById('metafyx-panel-iframe');
+  if (iframe && iframe.contentWindow) {
+    iframe.contentWindow.postMessage({
+      source: 'metafyx-content',
+      type,
+      data
+    }, '*');
+  }
+}

@@ -3,8 +3,16 @@
  * Handles API calls and cross-origin requests
  */
 
-import { generateMetadata } from './utils/api.js';
-import { getAPIKey } from './utils/storage.js';
+// Import utilities using dynamic imports for service worker
+let apiUtils, storageUtils;
+
+async function loadUtils() {
+  if (!apiUtils) {
+    apiUtils = await import('./utils/api.js');
+    storageUtils = await import('./utils/storage.js');
+  }
+  return { apiUtils, storageUtils };
+}
 
 /**
  * Handle messages from content scripts
@@ -28,14 +36,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function handleGenerateMetadata(data) {
   const { imageUrl } = data;
   
+  // Load utilities
+  const { apiUtils, storageUtils } = await loadUtils();
+  
   // Get API key from storage
-  const apiKeyData = await getAPIKey();
+  const apiKeyData = await storageUtils.getAPIKey();
   if (!apiKeyData || !apiKeyData.key) {
     throw new Error('API key not configured. Please set your API key in the extension settings.');
   }
   
   // Generate metadata
-  const metadata = await generateMetadata(
+  const metadata = await apiUtils.generateMetadata(
     apiKeyData.key,
     apiKeyData.provider,
     imageUrl

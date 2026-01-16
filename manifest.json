@@ -17,11 +17,13 @@
       "matches": ["https://stock.adobe.com/*"],
       "js": ["content.js"],
       "css": ["styles.css"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "type": "module"
     }
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
     "default_popup": "popup.html",
@@ -38,7 +40,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["panel.html", "panel.js"],
+      "resources": ["panel.html", "panel.js", "styles.css", "utils/*.js"],
       "matches": ["https://stock.adobe.com/*"]
     }
   ]
