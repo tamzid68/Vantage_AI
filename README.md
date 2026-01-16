@@ -1,4 +1,4 @@
-# Metafyx AI - Chrome Extension
+# Vantage AI - Chrome Extension
 
 AI-powered metadata generation and bulk automation tool for Adobe Stock contributors.
 
