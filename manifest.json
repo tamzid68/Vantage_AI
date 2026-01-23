@@ -10,15 +10,18 @@
   "host_permissions": [
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
-    "https://stock.adobe.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://stock.adobe.com/*",
+    "https://contributor.stock.adobe.com/*",
+    "http://localhost:3000/*",
+    "http://localhost:*/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://stock.adobe.com/*"],
+      "matches": ["https://stock.adobe.com/*", "https://contributor.stock.adobe.com/*"],
       "js": ["content.js"],
       "css": ["styles.css"],
-      "run_at": "document_idle",
-      "type": "module"
+      "run_at": "document_start"
     }
   ],
   "background": {
@@ -40,8 +43,8 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["panel.html", "panel.js", "styles.css", "utils/*.js"],
-      "matches": ["https://stock.adobe.com/*"]
+      "resources": ["popup.js", "panel.html", "panel.js", "styles.css", "utils/*.js"],
+      "matches": ["https://stock.adobe.com/*", "https://contributor.stock.adobe.com/*", "<all_urls>"]
     }
   ]
 }

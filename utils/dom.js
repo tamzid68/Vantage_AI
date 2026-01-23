@@ -10,17 +10,75 @@ import { CONFIG } from './constants.js';
  * @returns {HTMLElement[]}
  */
 export function findUploadItems() {
-  const selectors = CONFIG.SELECTORS.UPLOAD_ITEMS.split(', ');
-  const items = [];
+  const candidates = [];
+  console.log('[Metafyx] Searching for upload items...');
+
+  // Strategy 1: Find all images that look like upload previews
+  const images = document.querySelectorAll('img');
+  console.log(`[Metafyx] Found ${images.length} total images on page`);
   
-  for (const selector of selectors) {
-    const found = document.querySelectorAll(selector);
-    if (found.length > 0) {
-      found.forEach(item => items.push(item));
+  let validImages = 0;
+  for (const img of images) {
+    // Skip tiny images, icons, logos (but be lenient - sometimes images haven't loaded dimensions yet)
+    if (img.complete && (img.naturalWidth < 50 || img.naturalHeight < 50)) {
+      continue;
+    }
+    
+    // Skip images in header, nav, footer, sidebar
+    const inExcluded = img.closest('header, nav, footer, aside, [role="banner"], [role="navigation"], [class*="logo" i], [class*="header" i], [class*="nav" i]');
+    if (inExcluded) {
+      continue;
+    }
+    
+    validImages++;
+    
+    // Debug: log image source and parent chain
+    const imgSrc = img.src?.substring(0, 60) || img.dataset.src?.substring(0, 60) || 'no-src';
+    let parent = img.parentElement;
+    let depth = 0;
+    const chain = [];
+    while (parent && depth < 5) {
+      chain.push(`${parent.tagName}${parent.className ? '.' + parent.className.split(' ')[0] : ''}`);
+      parent = parent.parentElement;
+      depth++;
+    }
+    console.log(`[Metafyx] Image ${validImages}: src=${imgSrc}, chain:`, chain.join(' > '));
+    
+    // Strategy: find a reasonable parent container (not body/html)
+    // Try specific selectors first, then fallback to generic containers
+    let container = img.closest(
+      '[data-testid*="upload" i], ' +
+      '[data-testid*="asset" i], ' +
+      '[data-automation-id*="asset" i], ' +
+      'li[class*="upload" i], ' +
+      'li[class*="asset" i], ' +
+      'article, ' +
+      '[role="listitem"], ' +
+      '.grid__item, ' +
+      '[class*="grid-item" i], ' +
+      '[class*="card" i], ' +
+      'figure, ' +
+      'li, ' +
+      'div[class*="item" i], ' +
+      'div[class*="tile" i]'
+    );
+    
+    // If nothing specific found, just use closest div/li/figure that's not the body
+    if (!container) {
+      container = img.closest('div, li, figure, article, section');
+      if (container === document.body || container === document.documentElement) {
+        container = null;
+      }
+    }
+    
+    if (container && !candidates.includes(container)) {
+      console.log('[Metafyx] Found upload item container:', container.className || container.tagName);
+      candidates.push(container);
     }
   }
-  
-  return Array.from(new Set(items)); // Remove duplicates
+
+  console.log(`[Metafyx] Valid images: ${validImages}, Upload items found: ${candidates.length}`);
+  return candidates;
 }
 
 /**
@@ -57,16 +115,63 @@ export function findKeywordsField(container) {
  * @returns {string | null}
  */
 export function findImageUrl(container) {
-  const selectors = CONFIG.SELECTORS.IMAGE_PREVIEW.split(', ');
-  for (const selector of selectors) {
-    const img = container.querySelector(selector);
-    if (img && img.src) {
-      return img.src;
+  const selectors = CONFIG.SELECTORS.IMAGE_PREVIEW.split(', ').map(s => s.trim()).filter(Boolean);
+
+  const extractSrc = el => {
+    if (!el) return null;
+    if (el.currentSrc) return el.currentSrc;
+    if (el.srcset) {
+      const firstSrc = el.srcset.split(',')[0]?.trim().split(' ')[0];
+      if (firstSrc) return firstSrc;
     }
-    if (img && img.dataset.src) {
-      return img.dataset.src;
+    if (el.src) return el.src;
+    const dataAttrs = ['data-src', 'data-lazy-src', 'data-thumb', 'data-url', 'data-img', 'data-thumbnail'];
+    for (const attr of dataAttrs) {
+      const val = el.getAttribute(attr);
+      if (val) return val;
+    }
+    return null;
+  };
+
+  // First try: any img within container
+  const allImages = container.querySelectorAll('img');
+  if (allImages.length > 0) {
+    for (const img of allImages) {
+      const src = extractSrc(img);
+      if (src && src.startsWith('http')) {
+        console.log('[Metafyx] Found image URL from img:', src.substring(0, 80));
+        return src;
+      }
     }
   }
+
+  for (const selector of selectors) {
+    const node = container.querySelector(selector);
+    const direct = extractSrc(node);
+    if (direct) return direct;
+
+    // Check <picture> children
+    if (node && node.tagName === 'PICTURE') {
+      const imgChild = node.querySelector('img');
+      const src = extractSrc(imgChild);
+      if (src) return src;
+      const sourceChild = node.querySelector('source');
+      const sourceSrc = extractSrc(sourceChild);
+      if (sourceSrc) return sourceSrc;
+    }
+  }
+
+  // Background-image fallback
+  const bgContainer = container.querySelector('[style*="background-image"], [data-background-image]');
+  const bgStyle = bgContainer ? (bgContainer.getAttribute('style') || '') : '';
+  const bgData = bgContainer ? bgContainer.getAttribute('data-background-image') : '';
+  const bgMatch = /url\(([^)]+)\)/i.exec(bgStyle);
+  if (bgMatch && bgMatch[1]) {
+    return bgMatch[1].replace(/['"]/g, '');
+  }
+  if (bgData) return bgData;
+
+  console.warn('[Metafyx] Could not extract image URL. Images found:', allImages.length);
   return null;
 }
 
@@ -208,12 +313,92 @@ export function isItemSelected(item) {
 }
 
 /**
- * Select an upload item
- * @param {HTMLElement} item - Upload item element
+ * Find save button within a container or near it
+ * @param {HTMLElement} container - Container element
+ * @returns {HTMLElement | null}
  */
-export function selectItem(item) {
-  const checkbox = item.querySelector('input[type="checkbox"]');
-  if (checkbox && !checkbox.checked) {
-    checkbox.click();
+export function findSaveButton(container) {
+  // Try multiple selectors for save button
+  const selectors = [
+    'button[aria-label*="Save" i]',
+    'button:contains("Save")',
+    'button[data-testid*="save"]',
+    'button[class*="save"]',
+    'button:has-text("Save")',
+    '[role="button"][aria-label*="Save" i]',
+    'button[type="button"]:not([type="reset"]):not([class*="cancel"])'
+  ];
+
+  // First try within container
+  for (const selector of selectors) {
+    try {
+      const button = container.querySelector(selector);
+      if (button && button.textContent.toLowerCase().includes('save')) {
+        return button;
+      }
+    } catch (e) {
+      // Selector might not be supported
+    }
   }
+
+  // Look for button with save-like text in container
+  const buttons = container.querySelectorAll('button');
+  for (const button of buttons) {
+    const text = button.textContent.toLowerCase();
+    if (text.includes('save') || text.includes('apply') || text.includes('done')) {
+      return button;
+    }
+  }
+
+  // Try parent container's save button
+  const parent = container.closest('[class*="modal"], [class*="panel"], [class*="dialog"]');
+  if (parent) {
+    const buttons = parent.querySelectorAll('button');
+    for (const button of buttons) {
+      const text = button.textContent.toLowerCase();
+      if (text.includes('save') || text.includes('apply')) {
+        return button;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Click save button with proper event triggering
+ * @param {HTMLElement} button - Button element
+ */
+export function clickSaveButton(button) {
+  if (!button) return;
+
+  // Scroll into view if needed
+  button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // Wait a bit for scroll
+  setTimeout(() => {
+    // Simulate mouse events for better compatibility
+    const mouseDownEvent = new MouseEvent('mousedown', {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    });
+    const mouseUpEvent = new MouseEvent('mouseup', {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    });
+    const clickEvent = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    });
+
+    button.dispatchEvent(mouseDownEvent);
+    setTimeout(() => {
+      button.dispatchEvent(mouseUpEvent);
+      button.dispatchEvent(clickEvent);
+      button.click(); // Also try direct click
+    }, 100);
+  }, 100);
 }

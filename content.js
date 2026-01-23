@@ -1,256 +1,313 @@
 /**
  * Content Script for Metafyx AI
- * Injects UI panel into Adobe Stock New Uploads page
+ * Handles image scraping and metadata injection on Adobe Stock uploads page
  */
 
-import { 
-  findUploadItems, 
-  findImageUrl, 
-  findTitleField, 
+// Lazy-load helpers since content scripts don't support static ES module imports
+let findUploadItems,
+  findImageUrl,
+  findTitleField,
   findKeywordsField,
-  setTitle, 
-  setKeywords 
-} from './utils/dom.js';
-import { processBatch, bulkApplySettings } from './utils/processor.js';
-import { exportToCSV, downloadCSV, readCSVFile } from './utils/csv.js';
-import { getSettings } from './utils/storage.js';
+  setTitle,
+  setKeywords,
+  findSaveButton,
+  clickSaveButton,
+  generateMetadata;
 
-let panelInjected = false;
+async function loadHelpers() {
+  if (findUploadItems) return; // already loaded
+
+  const domMod = await import(chrome.runtime.getURL('utils/dom.js'));
+  findUploadItems = domMod.findUploadItems;
+  findImageUrl = domMod.findImageUrl;
+  findTitleField = domMod.findTitleField;
+  findKeywordsField = domMod.findKeywordsField;
+  setTitle = domMod.setTitle;
+  setKeywords = domMod.setKeywords;
+  findSaveButton = domMod.findSaveButton;
+  clickSaveButton = domMod.clickSaveButton;
+
+  const apiMod = await import(chrome.runtime.getURL('utils/api.js'));
+  generateMetadata = apiMod.generateMetadata;
+}
+
+console.log('[Metafyx] Content script loaded:', window.location.href);
+
 let isProcessing = false;
 let shouldStopProcessing = false;
+const DELAY_BETWEEN_ITEMS = 2000; // Delay between processing items (ms)
+const DELAY_BETWEEN_FIELDS = 500; // Delay between setting fields (ms)
+const UPLOAD_WAIT_TIMEOUT = 15000; // Max wait for upload items to appear
 
 /**
- * Check if we're on the New Uploads page
+ * Check if we're on the Adobe Stock upload page
  * @returns {boolean}
  */
-function isNewUploadsPage() {
-  return window.location.href.includes('stock.adobe.com') && 
-         (window.location.pathname.includes('upload') || 
-          window.location.pathname.includes('new') ||
-          document.querySelector('[data-testid="upload-item"], .upload-item'));
+function isOnAdobeStockPage() {
+  const host = window.location.host;
+  const isAdobeStock = host.includes('stock.adobe.com') || host.includes('contributor.stock.adobe.com');
+  console.log('[Metafyx] On Adobe Stock page:', isAdobeStock, host);
+  return isAdobeStock;
 }
 
 /**
- * Inject the UI panel into the page
+ * Wait for DOM element to appear
+ * @param {string} selector - CSS selector
+ * @param {number} timeout - Timeout in ms
+ * @returns {Promise<HTMLElement>}
  */
-function injectPanel() {
-  if (panelInjected) return;
-  
-  // Create panel container
-  const panelContainer = document.createElement('div');
-  panelContainer.id = 'metafyx-panel-container';
-  
-  // Create iframe for isolated panel
-  const iframe = document.createElement('iframe');
-  iframe.id = 'metafyx-panel-iframe';
-  iframe.src = chrome.runtime.getURL('panel.html');
-  iframe.style.cssText = `
-    width: 400px;
-    height: 100vh;
-    position: fixed;
-    top: 0;
-    right: 0;
-    z-index: 999999;
-    border: none;
-    box-shadow: -2px 0 10px rgba(0,0,0,0.3);
-  `;
-  
-  panelContainer.appendChild(iframe);
-  document.body.appendChild(panelContainer);
-  
-  panelInjected = true;
-}
-
-/**
- * Initialize extension on page load
- */
-function init() {
-  if (!isNewUploadsPage()) {
-    // Check periodically if we navigate to uploads page
-    const observer = new MutationObserver(() => {
-      if (isNewUploadsPage() && !panelInjected) {
-        injectPanel();
-      }
-    });
-    
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    
-    return;
-  }
-  
-  // Wait for page to be fully loaded
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectPanel);
-  } else {
-    injectPanel();
-  }
-}
-
-// Start initialization
-init();
-
-// Listen for messages from panel iframe
-window.addEventListener('message', async (event) => {
-  // Verify message is from our extension
-  if (event.data.source === 'metafyx-panel') {
-    const { action } = event.data;
-    
-    try {
-      switch (action) {
-        case 'startProcessing':
-          await handleStartProcessing();
-          break;
-        case 'stopProcessing':
-          shouldStopProcessing = true;
-          break;
-        case 'bulkApply':
-          await handleBulkApply();
-          break;
-        case 'exportCSV':
-          await handleExportCSV();
-          break;
-        case 'importCSV':
-          await handleImportCSV(event.data.file);
-          break;
-        default:
-          console.warn('Unknown action:', action);
-      }
-    } catch (error) {
-      console.error('Error handling panel action:', error);
-      sendMessageToPanel('error', { message: error.message });
+function waitForElement(selector, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    const element = document.querySelector(selector);
+    if (element) {
+      resolve(element);
+      return;
     }
-  }
-});
+
+    const observer = new MutationObserver(() => {
+      const element = document.querySelector(selector);
+      if (element) {
+        observer.disconnect();
+        resolve(element);
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    setTimeout(() => {
+      observer.disconnect();
+      reject(new Error(`Timeout waiting for element: ${selector}`));
+    }, timeout);
+  });
+}
 
 /**
- * Handle start processing action
+ * Delay execution
+ * @param {number} ms - Milliseconds
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Send status update to popup
+ */
+function sendStatusToPopup(action, data = {}) {
+  chrome.runtime.sendMessage({
+    source: 'metafyx-content',
+    action,
+    data
+  }).catch(error => {
+    console.log('[Metafyx] Cannot send message to popup (popup may be closed):', error.message);
+  });
+}
+
+/**
+ * Process a single upload item
+ * @param {HTMLElement} item - Upload item element
+ * @param {number} index - Item index
+ * @param {number} total - Total items
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function processUploadItem(item, index, total) {
+  try {
+    await loadHelpers();
+
+    console.log(`[Metafyx] [${index + 1}/${total}] Processing upload item...`);
+    sendStatusToPopup('processingStatus', { status: `Processing ${index + 1}/${total}` });
+
+    // Find image URL
+    const imageUrl = findImageUrl(item);
+    if (!imageUrl) {
+      console.warn('[Metafyx] No image URL found for item. Outer HTML snippet:', item.outerHTML?.slice(0, 500));
+      throw new Error('Could not extract image URL');
+    }
+
+    console.log(`[Metafyx] Found image URL: ${imageUrl.substring(0, 60)}...`);
+
+    // Generate metadata using backend
+    console.log('[Metafyx] Generating metadata...');
+    const metadata = await generateMetadata(imageUrl, {
+      maxRetries: 3,
+      retryDelay: 2000
+    });
+
+    if (!metadata.title || !metadata.keywords || metadata.keywords.length === 0) {
+      throw new Error('Invalid metadata received from backend');
+    }
+
+    console.log('[Metafyx] Metadata generated:', {
+      title: metadata.title.substring(0, 40),
+      keywords: metadata.keywords.length
+    });
+
+    // Set title field
+    console.log('[Metafyx] Setting title field...');
+    const titleSet = setTitle(item, metadata.title);
+    if (!titleSet) {
+      console.warn('[Metafyx] Could not set title field');
+    }
+
+    await delay(DELAY_BETWEEN_FIELDS);
+
+    // Set keywords field
+    console.log('[Metafyx] Setting keywords field...');
+    const keywordsSet = setKeywords(item, metadata.keywords);
+    if (!keywordsSet) {
+      console.warn('[Metafyx] Could not set keywords field');
+    }
+
+    await delay(DELAY_BETWEEN_FIELDS);
+
+    // Find and click save button
+    console.log('[Metafyx] Clicking save button...');
+    const saveButton = findSaveButton(item);
+    if (saveButton) {
+      try {
+        clickSaveButton(saveButton);
+        console.log('[Metafyx] Save button clicked');
+      } catch (error) {
+        console.warn('[Metafyx] Error clicking save button:', error.message);
+      }
+    } else {
+      console.warn('[Metafyx] Save button not found');
+    }
+
+    sendStatusToPopup('updateProgress', { current: index + 1, total });
+
+    return { success: true };
+
+  } catch (error) {
+    console.error(`[Metafyx] Error processing item ${index + 1}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Main automation function
  */
 async function handleStartProcessing() {
   if (isProcessing) {
-    sendMessageToPanel('error', { message: 'Processing already in progress' });
+    console.log('[Metafyx] Processing already in progress');
+    sendStatusToPopup('processingError', { message: 'Processing already in progress' });
+    return;
+  }
+
+  if (!isOnAdobeStockPage()) {
+    console.error('[Metafyx] Not on Adobe Stock page');
+    sendStatusToPopup('processingError', { message: 'Not on Adobe Stock upload page' });
     return;
   }
 
   isProcessing = true;
   shouldStopProcessing = false;
 
+  let successCount = 0;
+  let errorCount = 0;
+
   try {
-    const items = findUploadItems();
+    await loadHelpers();
+
+    console.log('[Metafyx] Starting automation...');
+
+    // Find all upload items (wait briefly for page render)
+    const items = await waitForUploadItems();
     const total = items.length;
-    
-    sendMessageToPanel('processingStarted', { total });
 
-    let failedCount = 0;
-    const result = await processBatch(
-      (processed, total, currentItem, result) => {
-        if (!result.success) {
-          failedCount++;
+    if (total === 0) {
+      throw new Error('No upload items found on page');
+    }
+
+    console.log(`[Metafyx] Found ${total} upload items`);
+    sendStatusToPopup('processingStatus', { status: `Found ${total} items` });
+
+    // Process each item
+    for (let i = 0; i < total; i++) {
+      // Check if stop requested
+      if (shouldStopProcessing) {
+        console.log('[Metafyx] Stop requested by user');
+        sendStatusToPopup('processingStatus', { status: 'Stopped by user' });
+        break;
+      }
+
+      try {
+        const result = await processUploadItem(items[i], i, total);
+        
+        if (result.success) {
+          successCount++;
+        } else {
+          errorCount++;
+          console.error(`[Metafyx] Item ${i + 1} failed:`, result.error);
         }
-        const percentage = Math.round((processed / total) * 100);
-        sendMessageToPanel('progress', {
-          processed,
-          total,
-          percentage,
-          current: result.success ? 'Success' : result.error,
-          failed: failedCount
-        });
-      },
-      () => shouldStopProcessing
-    );
+      } catch (error) {
+        errorCount++;
+        console.error(`[Metafyx] Unexpected error processing item ${i + 1}:`, error);
+      }
 
-    sendMessageToPanel('processingComplete', result);
+      // Delay before next item
+      if (i < total - 1) {
+        await delay(DELAY_BETWEEN_ITEMS);
+      }
+    }
+
+    console.log(`[Metafyx] Processing complete: ${successCount} success, ${errorCount} errors`);
+    sendStatusToPopup('processingComplete', {
+      success: errorCount === 0,
+      total,
+      successCount,
+      errorCount
+    });
+
   } catch (error) {
-    sendMessageToPanel('error', { message: error.message });
+    console.error('[Metafyx] Critical error during processing:', error);
+    sendStatusToPopup('processingError', { message: error.message });
   } finally {
     isProcessing = false;
   }
 }
 
 /**
- * Handle bulk apply action
+ * Wait for upload items to appear before processing
  */
-async function handleBulkApply() {
-  try {
-    const settings = await getSettings();
-    await bulkApplySettings(settings);
-    sendMessageToPanel('bulkApplyComplete', { success: true });
-  } catch (error) {
-    sendMessageToPanel('error', { message: error.message });
-  }
-}
-
-/**
- * Handle CSV export
- */
-async function handleExportCSV() {
-  try {
+async function waitForUploadItems(timeout = UPLOAD_WAIT_TIMEOUT, poll = 500) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
     const items = findUploadItems();
-    const exportData = items.map((item, index) => {
-      const imageUrl = findImageUrl(item);
-      const titleField = findTitleField(item);
-      const keywordsField = findKeywordsField(item);
-      
-      return {
-        id: `item-${index}`,
-        title: titleField?.value || '',
-        keywords: keywordsField?.value ? keywordsField.value.split(',').map(k => k.trim()) : [],
-        imageUrl: imageUrl || '',
-        generativeAI: false, // Would need to check checkbox state
-        propertyRelease: '',
-        category: ''
-      };
-    });
-
-    const csvContent = exportToCSV(exportData);
-    downloadCSV(csvContent, `metafyx-export-${Date.now()}.csv`);
-    sendMessageToPanel('exportComplete', { success: true });
-  } catch (error) {
-    sendMessageToPanel('error', { message: error.message });
-  }
-}
-
-/**
- * Handle CSV import
- */
-async function handleImportCSV(file) {
-  if (!file) return;
-  
-  try {
-    const items = await readCSVFile(file);
-    const uploadItems = findUploadItems();
-    
-    // Match items by index or ID
-    for (let i = 0; i < Math.min(items.length, uploadItems.length); i++) {
-      const item = items[i];
-      const uploadItem = uploadItems[i];
-      
-      if (item.title) {
-        setTitle(uploadItem, item.title);
-      }
-      if (item.keywords && item.keywords.length > 0) {
-        setKeywords(uploadItem, item.keywords);
-      }
+    if (items.length > 0) {
+      return items;
     }
-    
-    sendMessageToPanel('importComplete', { success: true, imported: items.length });
-  } catch (error) {
-    sendMessageToPanel('error', { message: error.message });
+    await delay(poll);
   }
+  return [];
 }
 
 /**
- * Send message to panel iframe
+ * Listen for messages from popup
  */
-function sendMessageToPanel(type, data) {
-  const iframe = document.getElementById('metafyx-panel-iframe');
-  if (iframe && iframe.contentWindow) {
-    iframe.contentWindow.postMessage({
-      source: 'metafyx-content',
-      type,
-      data
-    }, '*');
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.source === 'metafyx-popup') {
+    console.log('[Metafyx] Received message from popup:', request.action);
+
+    try {
+      switch (request.action) {
+        case 'startProcessing':
+          handleStartProcessing()
+            .then(() => sendResponse({ success: true }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          return true; // Keep channel open for async response
+        
+        case 'stopProcessing':
+          shouldStopProcessing = true;
+          sendResponse({ success: true });
+          break;
+
+        default:
+          console.warn('[Metafyx] Unknown action:', request.action);
+          sendResponse({ success: false, error: 'Unknown action' });
+      }
+    } catch (error) {
+      console.error('[Metafyx] Error handling popup message:', error);
+      sendResponse({ success: false, error: error.message });
+    }
   }
-}
+});
