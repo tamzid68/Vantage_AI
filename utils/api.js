@@ -144,13 +144,11 @@ export async function generateMetadata(imageUrl, options = {}) {
         lastError = new Error('Request timeout - backend is taking too long');
       }
 
-      // Don't retry on authentication errors
-      if (error.message.includes('authentication failed')) {
-        throw error;
-      }
-
-      // Don't retry on validation errors
-      if (error.message.includes('Invalid')) {
+      // Don't retry 4xx errors (client errors - authentication, validation, not found)
+      if (error.message.includes('authentication failed') || 
+          error.message.includes('Invalid') ||
+          error.message.includes('not found') ||
+          error.message.includes('404')) {
         throw error;
       }
 

@@ -16,8 +16,12 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const AI_PROVIDER = process.env.AI_PROVIDER || 'openai'; // 'openai' or 'gemini'
-const API_KEY = process.env.API_KEY;
+const AI_PROVIDER = process.env.AI_PROVIDER || 'openai'; // 'openai', 'gemini', or 'grok'
+const API_KEY = process.env.API_KEY; // Backward-compatible key for OpenAI/Gemini
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || API_KEY;
+const GROK_API_KEY = process.env.GROK_API_KEY;
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GROK_MODEL = process.env.GROK_MODEL || 'grok-2-vision-1212';
 
 // Middleware
 app.use(express.json());
@@ -44,13 +48,20 @@ app.use('/api/', limiter);
  * Validate API key at startup
  */
 function validateApiKey() {
-  if (!API_KEY) {
-    console.error('❌ ERROR: API_KEY environment variable not set');
-    console.error('Please set API_KEY in .env file');
+  const keyByProvider = {
+    openai: OPENAI_API_KEY,
+    gemini: API_KEY,
+    grok: GROK_API_KEY
+  };
+  const selectedKey = keyByProvider[AI_PROVIDER];
+
+  if (!selectedKey) {
+    console.error(`❌ ERROR: API key for provider '${AI_PROVIDER}' is not set`);
+    console.error('Please set the correct key in .env (API_KEY, OPENAI_API_KEY, or GROK_API_KEY)');
     process.exit(1);
   }
   console.log(`✓ API Provider: ${AI_PROVIDER}`);
-  console.log(`✓ API Key configured: ${API_KEY.substring(0, 5)}...`);
+  console.log(`✓ API Key configured: ${selectedKey.substring(0, 5)}...`);
 }
 
 /**
@@ -134,7 +145,7 @@ Rules:
       },
       {
         headers: {
-          'Authorization': `Bearer ${API_KEY}`,
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         },
         timeout: 30000
@@ -186,19 +197,26 @@ Rules:
 }
 
 /**
- * Generate metadata using Google Gemini Vision
+ * Generate metadata using xAI Grok Vision (OpenAI-compatible API)
  * @param {string} base64Image - Base64 encoded image
  * @returns {Promise<{title: string, keywords: string[]}>}
  */
-async function generateMetadataGemini(base64Image) {
+async function generateMetadataGrok(base64Image) {
   try {
+    if (!GROK_API_KEY) {
+      throw new Error('Grok API key missing. Set GROK_API_KEY in .env');
+    }
+
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`,
+      'https://api.x.ai/v1/chat/completions',
       {
-        contents: [
+        model: GROK_MODEL,
+        messages: [
           {
-            parts: [
+            role: 'user',
+            content: [
               {
+                type: 'text',
                 text: `You are an expert stock photo metadata specialist. Analyze this image and generate professional metadata for a stock photography platform like Adobe Stock.
 
 Return ONLY a valid JSON object with no additional text:
@@ -217,8 +235,129 @@ Rules:
 - No duplicates`
               },
               {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Image}`
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${GROK_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    if (!response.data.choices || !response.data.choices[0]) {
+      throw new Error('Invalid response format from Grok API');
+    }
+
+    const content = response.data.choices[0].message.content;
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON found in API response');
+    }
+
+    const metadata = JSON.parse(jsonMatch[0]);
+    if (!metadata.title || !Array.isArray(metadata.keywords)) {
+      throw new Error('Invalid metadata structure: missing title or keywords');
+    }
+
+    const keywords = metadata.keywords
+      .slice(0, 10)
+      .map(k => String(k).trim().toLowerCase())
+      .filter(k => k.length > 0);
+
+    if (keywords.length < 5) {
+      throw new Error('Insufficient keywords generated');
+    }
+
+    return {
+      title: String(metadata.title).trim().substring(0, 100),
+      keywords
+    };
+  } catch (error) {
+    const status = error.response?.status;
+    const providerMessage = error.response?.data?.error || error.response?.data?.message || '';
+
+    if (status === 401 || status === 403 || providerMessage.includes('Incorrect API key')) {
+      throw new Error('Grok API authentication failed - check GROK_API_KEY');
+    }
+    if (status === 429) {
+      throw new Error('Grok API rate limit exceeded - try again later');
+    }
+    if (providerMessage.includes('Model not found')) {
+      throw new Error(`Grok model '${GROK_MODEL}' not found. Set a valid GROK_MODEL in .env`);
+    }
+    throw new Error(`Grok API error: ${error.message}`);
+  }
+}
+
+/**
+ * Generate metadata using Google Gemini Vision
+ * Uses Gemini REST API (v1beta) for reliable model routing
+ * @param {string} base64Image - Base64 encoded image
+ * @returns {Promise<{title: string, keywords: string[]}>}
+ */
+async function generateMetadataGemini(base64Image) {
+  try {
+    console.log(`🔍 Gemini request - Image size: ${base64Image.length} bytes`);
+    
+    if (!API_KEY || API_KEY.length === 0) {
+      throw new Error('GEMINI API_KEY is not configured in .env');
+    }
+    
+    // Use the configured model
+    const modelName = GEMINI_MODEL || 'gemini-2.0-flash';
+    console.log(`📦 Using model: ${modelName}`);
+    
+    // Detect MIME type from base64 header
+    let mimeType = 'image/jpeg'; // default
+    if (base64Image.startsWith('/9j/')) {
+      mimeType = 'image/jpeg';
+    } else if (base64Image.startsWith('iVBORw0KGgo')) {
+      mimeType = 'image/png';
+    } else if (base64Image.startsWith('UklGR')) {
+      mimeType = 'image/webp';
+    }
+    console.log(`🖼️  Detected MIME type: ${mimeType}`);
+    
+    // Prepare the prompt
+    const prompt = `You are an expert stock photo metadata specialist. Analyze this image and generate professional metadata for a stock photography platform like Adobe Stock.
+
+Return ONLY a valid JSON object with no additional text:
+{
+  "title": "SEO-friendly stock photo title (5-10 words, captivating and descriptive)",
+  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5", "keyword6", "keyword7", "keyword8", "keyword9", "keyword10"]
+}
+
+Rules:
+- Title should be compelling, descriptive, and optimized for search
+- Include 10 highly relevant keywords
+- Keywords should be specific and searchable
+- Avoid generic terms
+- Focus on commercial value for buyers
+- Keywords should be lowercase
+- No duplicates`;
+    
+    // Use direct v1beta REST call to avoid SDK endpoint/version mismatches.
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
                 inline_data: {
-                  mime_type: 'image/jpeg',
+                  mime_type: mimeType,
                   data: base64Image
                 }
               }
@@ -231,11 +370,12 @@ Rules:
       }
     );
 
-    if (!response.data.candidates || !response.data.candidates[0]) {
+    const content = response?.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!content) {
       throw new Error('Invalid response format from Gemini API');
     }
-
-    const content = response.data.candidates[0].content.parts[0].text;
+    
+    console.log('🔍 Gemini raw response:', content.substring(0, 200));
     
     // Extract JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -265,12 +405,41 @@ Rules:
       keywords: keywords
     };
   } catch (error) {
-    if (error.response?.status === 401 || error.response?.status === 403) {
-      throw new Error('Gemini API authentication failed - check API key');
+    // Log full error for debugging
+    console.error('❌ Gemini API error details:', {
+      name: error.name,
+      message: error.message,
+      status: error.status,
+      statusText: error.statusText
+    });
+    
+    const message = error.message || '';
+    const httpStatus = error.status || error.response?.status;
+
+    // Handle specific error types (don't retry these)
+    if (
+      httpStatus === 400 &&
+      (message.includes('API_KEY_INVALID') || message.includes('API key not valid') || message.includes('API_KEY'))
+    ) {
+      throw new Error('Gemini API key invalid. Get a new key from https://aistudio.google.com/app/apikey');
     }
-    if (error.response?.status === 429) {
-      throw new Error('Gemini API rate limit exceeded - try again later');
+
+    if (httpStatus === 404 || message.includes('models/') || message.includes('not found')) {
+      throw new Error(`Gemini model '${GEMINI_MODEL}' is unavailable for the selected API endpoint. Try removing custom apiVersion overrides and set GEMINI_MODEL in .env to an available model.`);
     }
+
+    if (message.includes('API_KEY') || message.includes('API key') || message.includes('invalid')) {
+      throw new Error('Gemini API key invalid. Get a new key from https://aistudio.google.com/app/apikey');
+    }
+    
+    if (httpStatus === 429 || message.includes('quota') || message.includes('RESOURCE_EXHAUSTED')) {
+      throw new Error('Gemini API quota exceeded. Try again later or upgrade your plan.');
+    }
+    
+    if (message.includes('PERMISSION_DENIED')) {
+      throw new Error('Gemini API key does not have permission. Enable Gemini API in Google Cloud Console.');
+    }
+    
     throw new Error(`Gemini API error: ${error.message}`);
   }
 }
@@ -324,6 +493,8 @@ app.post('/api/generate-metadata', async (req, res) => {
     let metadata;
     if (AI_PROVIDER === 'gemini') {
       metadata = await generateMetadataGemini(base64Image);
+    } else if (AI_PROVIDER === 'grok') {
+      metadata = await generateMetadataGrok(base64Image);
     } else {
       metadata = await generateMetadataOpenAI(base64Image);
     }
@@ -338,16 +509,18 @@ app.post('/api/generate-metadata', async (req, res) => {
   } catch (error) {
     console.error('❌ Error in /api/generate-metadata:', error.message);
     
-    // Determine appropriate status code
+    // Determine appropriate status code (don't retry 4xx errors)
     let statusCode = 500;
     let errorMessage = error.message;
 
-    if (error.message.includes('rate limit')) {
-      statusCode = 429;
-    } else if (error.message.includes('authentication failed')) {
-      statusCode = 401;
-    } else if (error.message.includes('Invalid')) {
-      statusCode = 400;
+    if (error.message.includes('not found') || error.message.includes('404')) {
+      statusCode = 404; // Don't retry
+    } else if (error.message.includes('rate limit') || error.message.includes('quota')) {
+      statusCode = 429; // Retry with backoff
+    } else if (error.message.includes('authentication') || error.message.includes('API key') || error.message.includes('invalid')) {
+      statusCode = 401; // Don't retry
+    } else if (error.message.includes('Invalid') || error.message.includes('PERMISSION_DENIED')) {
+      statusCode = 400; // Don't retry
     }
 
     res.status(statusCode).json({
@@ -389,6 +562,8 @@ app.post('/api/batch-generate', async (req, res) => {
         let metadata;
         if (AI_PROVIDER === 'gemini') {
           metadata = await generateMetadataGemini(base64Image);
+        } else if (AI_PROVIDER === 'grok') {
+          metadata = await generateMetadataGrok(base64Image);
         } else {
           metadata = await generateMetadataOpenAI(base64Image);
         }
