@@ -8,13 +8,11 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://api.openai.com/*",
-    "https://api.anthropic.com/*",
-    "https://generativelanguage.googleapis.com/*",
     "https://stock.adobe.com/*",
     "https://contributor.stock.adobe.com/*",
-    "http://localhost:3000/*",
-    "http://localhost:*/*"
+    "https://*.ftcdn.net/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "content_scripts": [
     {

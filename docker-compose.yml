@@ -5,12 +5,20 @@ services:
     build: .
     container_name: metafyx-ai-backend
     ports:
-      - "${PORT:-3000}:3000"
+      - "127.0.0.1:${PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
-      AI_PROVIDER: ${AI_PROVIDER:-openai}
-      API_KEY: ${API_KEY}
+      AI_PROVIDER: ${AI_PROVIDER:-gemini}
+      # Keys are optional: users can enter their own in the extension popup
+      API_KEY: ${API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GROK_API_KEY: ${GROK_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      GROK_MODEL: ${GROK_MODEL:-}
       PORT: 3000
+      HOST: 0.0.0.0
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs

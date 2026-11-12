@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 # Set working directory
 WORKDIR /app
@@ -7,13 +7,16 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install production dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy application files
 COPY server.js .
 
 # Create directories for logs (optional)
 RUN mkdir -p logs
+
+# Listen on all interfaces inside the container (publish the port to choose exposure)
+ENV HOST=0.0.0.0
 
 # Expose port
 EXPOSE 3000

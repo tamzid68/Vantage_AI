@@ -166,18 +166,44 @@ Content-Type: application/json
 
 ### Environment Variables (.env)
 
+### Your API key (per user)
+
+Every user brings their own key - nothing has to be put in `.env`:
+
+1. Start the backend: `npm start`
+2. Click the Metafyx icon → **Settings & connection test**
+3. Choose the provider (Gemini, OpenAI or Grok) and paste your API key
+4. Click **Test connection**. It checks, in order: the backend server, the
+   API key + model, and a real AI request on a built-in sample image.
+   When all three are green, press **START**.
+
+The key is stored in that browser profile only (`chrome.storage.local`) and is
+sent to your backend, which forwards it to the AI provider.
+
+### Environment Variables (.env) - all optional
+
 ```env
-# AI Provider: 'openai' or 'gemini'
-AI_PROVIDER=openai
-
-# API Key
-API_KEY=your_api_key_here
-
-# Server port
+AI_PROVIDER=gemini          # default provider: gemini | openai | grok
+GEMINI_API_KEY=             # optional fallback key for users without their own
+OPENAI_API_KEY=
+GROK_API_KEY=
+GEMINI_MODEL=gemini-flash-latest
+KEYWORD_COUNT=10            # keywords per image (5-49)
 PORT=3000
+HOST=127.0.0.1              # 0.0.0.0 to accept connections from other machines
+```
 
-# Environment
-NODE_ENV=production
+> `gemini-2.0-flash` was retired by Google on 1 June 2026. The default is now
+> `gemini-flash-latest`; if a configured Gemini model no longer exists the
+> server automatically switches to an available one and logs a warning.
+
+### Testing
+
+```bash
+npm test                                   # backend tests (fake AI provider, no key needed)
+curl http://localhost:3000/health          # is the server up?
+curl -X POST http://localhost:3000/api/self-test \
+     -H "X-AI-Provider: gemini" -H "X-AI-Key: YOUR_KEY"   # full AI round trip
 ```
 
 ## 🐳 Docker Deployment

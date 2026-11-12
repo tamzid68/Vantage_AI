@@ -1,26 +1,114 @@
 /**
  * API integration for Metafyx AI Backend Server
- * Communicates with Node.js backend for AI metadata generation
- * Uses OpenAI GPT-4o or Google Gemini Vision
+ * Communicates with the Node.js backend for AI metadata generation.
+ *
+ * Call these from an extension context (background service worker or popup),
+ * not from a content script: content-script requests run with the web page's
+ * origin and are subject to its CORS / local-network restrictions.
  */
 
 import { CONFIG } from './constants.js';
 
-/**
- * Configuration for backend server
- */
-const BACKEND_CONFIG = {
-  LOCAL_URL: 'http://localhost:3000',
-  TIMEOUT: 60000, // 60 seconds
-};
+const REQUEST_TIMEOUT = CONFIG.TIMEOUTS.API_CALL;
+const HEALTH_TIMEOUT = 5000;
 
 /**
- * Get backend URL from settings or use default
- * @returns {string} Backend API URL
+ * Get backend URL from extension storage, or the default
+ * @returns {Promise<string>} Backend API URL (no trailing slash)
  */
 export async function getBackendUrl() {
-  // You can make this configurable via extension storage
-  return BACKEND_CONFIG.LOCAL_URL;
+  try {
+    const key = CONFIG.STORAGE_KEYS.BACKEND_URL;
+    const stored = await chrome.storage.local.get(key);
+    if (typeof stored[key] === 'string' && stored[key].trim()) {
+      return stored[key].trim().replace(/\/+$/, '');
+    }
+  } catch {
+    // Storage unavailable - fall through to the default
+  }
+  return CONFIG.BACKEND_URL;
+}
+
+/**
+ * The user's own AI settings, entered in the popup
+ * @returns {Promise<{provider: string, apiKey: string, model: string}>}
+ */
+export async function getAISettings() {
+  try {
+    const key = CONFIG.STORAGE_KEYS.AI_SETTINGS;
+    const stored = (await chrome.storage.local.get(key))[key] || {};
+    return {
+      provider: stored.provider || '',
+      apiKey: stored.apiKey || '',
+      model: stored.model || ''
+    };
+  } catch {
+    return { provider: '', apiKey: '', model: '' };
+  }
+}
+
+/**
+ * Save the user's AI settings and backend URL.
+ * The key stays in this browser profile (chrome.storage.local) and is only
+ * ever sent to the backend server, which forwards it to the AI provider.
+ */
+export async function saveAISettings({ provider, apiKey, model, backendUrl }) {
+  await chrome.storage.local.set({
+    [CONFIG.STORAGE_KEYS.AI_SETTINGS]: {
+      provider: (provider || '').trim(),
+      apiKey: (apiKey || '').trim(),
+      model: (model || '').trim()
+    },
+    [CONFIG.STORAGE_KEYS.BACKEND_URL]: (backendUrl || '').trim()
+  });
+}
+
+/**
+ * Headers telling the backend which provider/key/model to use for this user.
+ * Empty when the user has not entered a key (backend then uses its .env).
+ */
+async function aiHeaders() {
+  const { provider, apiKey, model } = await getAISettings();
+  const headers = {};
+  if (provider) headers['X-AI-Provider'] = provider;
+  if (apiKey) headers['X-AI-Key'] = apiKey;
+  if (model) headers['X-AI-Model'] = model;
+  return headers;
+}
+
+/**
+ * fetch() with a timeout (fetch has no `timeout` option of its own)
+ */
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Get backend status
+ * @returns {Promise<{ok: boolean, provider?: string, model?: string}>}
+ */
+export async function getBackendStatus() {
+  try {
+    const backendUrl = await getBackendUrl();
+    const response = await fetchWithTimeout(`${backendUrl}/health`, { method: 'GET' }, HEALTH_TIMEOUT);
+    if (!response.ok) return { ok: false };
+    const body = await response.json().catch(() => ({}));
+    return {
+      ok: true,
+      provider: body.provider,
+      model: body.model,
+      serverKeyConfigured: Boolean(body.serverKeyConfigured)
+    };
+  } catch (error) {
+    console.warn('[Metafyx] Backend health check failed:', error.message);
+    return { ok: false };
+  }
 }
 
 /**
@@ -28,140 +116,140 @@ export async function getBackendUrl() {
  * @returns {Promise<boolean>} True if backend is reachable
  */
 export async function checkBackendHealth() {
+  return (await getBackendStatus()).ok;
+}
+
+/**
+ * Ask the backend to verify its AI provider key and model
+ * @returns {Promise<{ok: boolean, provider?: string, model?: string, error?: string}>}
+ */
+export async function getProviderStatus() {
   try {
     const backendUrl = await getBackendUrl();
-    const response = await fetch(`${backendUrl}/health`, {
-      method: 'GET',
-      timeout: 5000
-    });
-    return response.ok;
+    const response = await fetchWithTimeout(
+      `${backendUrl}/api/provider-status`,
+      { method: 'GET', headers: await aiHeaders() },
+      20000
+    );
+    const body = await response.json().catch(() => ({}));
+    return {
+      ok: Boolean(body.ok),
+      provider: body.provider,
+      model: body.model,
+      keySource: body.keySource,
+      warning: body.warning,
+      error: body.error || (body.ok ? undefined : `Backend error: HTTP ${response.status}`)
+    };
   } catch (error) {
-    console.error('[Metafyx] Backend health check failed:', error.message);
-    return false;
+    return { ok: false, error: 'Backend server is not reachable' };
   }
 }
 
 /**
- * Validate image URL format
- * @param {string} imageUrl - URL to validate
- * @returns {boolean}
+ * End-to-end test: the backend sends a built-in sample picture to the AI
+ * provider using this user's settings and returns the generated metadata.
+ * @returns {Promise<{ok: boolean, provider?: string, model?: string, durationMs?: number, data?: {title: string, keywords: string[]}, error?: string}>}
  */
-function isValidImageUrl(imageUrl) {
+export async function runSelfTest() {
   try {
-    const url = new URL(imageUrl);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
+    const backendUrl = await getBackendUrl();
+    const response = await fetchWithTimeout(
+      `${backendUrl}/api/self-test`,
+      { method: 'POST', headers: await aiHeaders() },
+      REQUEST_TIMEOUT
+    );
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.success) {
+      return { ok: false, error: body.error || `Backend error: HTTP ${response.status}` };
+    }
+    return { ok: true, provider: body.provider, model: body.model, durationMs: body.durationMs, data: body.data };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.name === 'AbortError' ? 'The AI provider took too long to answer' : 'Backend server is not reachable'
+    };
   }
 }
 
 /**
- * Generate metadata using backend server
- * @param {string} imageUrl - URL of the image to analyze
- * @param {Object} options - Optional configuration
+ * Build an Error that says whether trying again could help
+ */
+function requestError(message, retryable) {
+  const error = new Error(message);
+  error.retryable = retryable;
+  return error;
+}
+
+/**
+ * Request metadata from the backend - a single attempt.
+ * Thrown errors carry `retryable` (true for network errors, timeouts, 429, 5xx).
+ * @param {{imageUrl?: string, imageBase64?: string, mimeType?: string}} image
+ * @returns {Promise<{title: string, keywords: string[]}>}
+ */
+export async function requestMetadata(image) {
+  if (!image || (!image.imageUrl && !image.imageBase64)) {
+    throw requestError('No image provided', false);
+  }
+
+  const backendUrl = await getBackendUrl();
+  let response;
+
+  try {
+    response = await fetchWithTimeout(`${backendUrl}/api/generate-metadata`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await aiHeaders()) },
+      body: JSON.stringify(image)
+    }, REQUEST_TIMEOUT);
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw requestError('Request timeout - backend is taking too long', true);
+    }
+    throw requestError(`Cannot reach backend at ${backendUrl} - is the Node.js server running?`, true);
+  }
+
+  const body = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const retryable = response.status === 429 || response.status >= 500;
+    throw requestError(body?.error || `Backend error: HTTP ${response.status}`, retryable);
+  }
+
+  const metadata = body?.data;
+  if (!body?.success || !metadata?.title || !Array.isArray(metadata.keywords) || metadata.keywords.length === 0) {
+    throw requestError('Invalid response format from backend', true);
+  }
+  return metadata;
+}
+
+/**
+ * Generate metadata with retries and exponential backoff
+ * @param {string|{imageUrl?: string, imageBase64?: string, mimeType?: string}} image - Image URL or image object
+ * @param {Object} options - { maxRetries, retryDelay }
  * @returns {Promise<{title: string, keywords: string[]}>}
  * @throws {Error} If generation fails
  */
-export async function generateMetadata(imageUrl, options = {}) {
+export async function generateMetadata(image, options = {}) {
   const maxRetries = options.maxRetries || 3;
   const retryDelay = options.retryDelay || 2000;
-
-  // Validate input
-  if (!imageUrl || typeof imageUrl !== 'string') {
-    throw new Error('Invalid imageUrl: must be a non-empty string');
-  }
-
-  if (!isValidImageUrl(imageUrl)) {
-    throw new Error(`Invalid image URL format: ${imageUrl}`);
-  }
-
-  console.log('[Metafyx] Generating metadata for:', imageUrl.substring(0, 50) + '...');
+  const payload = typeof image === 'string' ? { imageUrl: image } : image;
 
   let lastError;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const backendUrl = await getBackendUrl();
-      
-      console.log(`[Metafyx] Sending to backend (attempt ${attempt}/${maxRetries})...`);
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), BACKEND_CONFIG.TIMEOUT);
-
-      const response = await fetch(`${backendUrl}/api/generate-metadata`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ imageUrl }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        
-        if (response.status === 429) {
-          throw new Error('Rate limited - too many requests. Try again in a moment.');
-        } else if (response.status === 401) {
-          throw new Error('Backend authentication failed - check API key configuration');
-        } else if (response.status === 400) {
-          throw new Error(errorData.error || 'Invalid request to backend');
-        } else {
-          throw new Error(errorData.error || `Backend error: ${response.statusText}`);
-        }
-      }
-
-      const result = await response.json();
-
-      if (!result.success || !result.data) {
-        throw new Error('Invalid response format from backend');
-      }
-
-      // Validate metadata structure
-      const metadata = result.data;
-      if (!metadata.title || !Array.isArray(metadata.keywords)) {
-        throw new Error('Invalid metadata structure from backend');
-      }
-
-      if (metadata.keywords.length === 0) {
-        throw new Error('No keywords generated from backend');
-      }
-
-      console.log('[Metafyx] Metadata generated successfully:', {
-        title: metadata.title.substring(0, 40) + '...',
-        keywordCount: metadata.keywords.length
-      });
-
-      return metadata;
-
+      return await requestMetadata(payload);
     } catch (error) {
       lastError = error;
       console.warn(`[Metafyx] Attempt ${attempt}/${maxRetries} failed:`, error.message);
 
-      if (error.name === 'AbortError') {
-        lastError = new Error('Request timeout - backend is taking too long');
-      }
+      if (!error.retryable || attempt === maxRetries) break;
 
-      // Don't retry 4xx errors (client errors - authentication, validation, not found)
-      if (error.message.includes('authentication failed') || 
-          error.message.includes('Invalid') ||
-          error.message.includes('not found') ||
-          error.message.includes('404')) {
-        throw error;
-      }
-
-      if (attempt < maxRetries) {
-        // Exponential backoff: 2s, 4s, 8s
-        const delay = retryDelay * Math.pow(2, attempt - 1);
-        console.log(`[Metafyx] Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
+      // Exponential backoff: 2s, 4s, 8s
+      await new Promise(resolve => setTimeout(resolve, retryDelay * Math.pow(2, attempt - 1)));
     }
   }
 
-  throw new Error(`Failed to generate metadata after ${maxRetries} attempts: ${lastError.message}`);
+  throw lastError;
 }
 
 /**
@@ -175,31 +263,15 @@ export async function batchGenerateMetadata(imageUrls, options = {}) {
     throw new Error('imageUrls must be a non-empty array');
   }
 
-  console.log(`[Metafyx] Batch processing ${imageUrls.length} images...`);
-
   const results = [];
   const delayBetweenRequests = options.delayBetweenRequests || 1000;
 
   for (let i = 0; i < imageUrls.length; i++) {
     try {
-      console.log(`[Metafyx] [${i + 1}/${imageUrls.length}] Processing image...`);
-      
       const metadata = await generateMetadata(imageUrls[i], options);
-      
-      results.push({
-        imageUrl: imageUrls[i],
-        metadata,
-        status: 'success'
-      });
-
+      results.push({ imageUrl: imageUrls[i], metadata, status: 'success' });
     } catch (error) {
-      console.error(`[Metafyx] Error processing image ${i + 1}:`, error.message);
-      
-      results.push({
-        imageUrl: imageUrls[i],
-        error: error.message,
-        status: 'failed'
-      });
+      results.push({ imageUrl: imageUrls[i], error: error.message, status: 'failed' });
     }
 
     // Add delay between requests to respect rate limits
@@ -207,9 +279,6 @@ export async function batchGenerateMetadata(imageUrls, options = {}) {
       await new Promise(resolve => setTimeout(resolve, delayBetweenRequests));
     }
   }
-
-  const successCount = results.filter(r => r.status === 'success').length;
-  console.log(`[Metafyx] Batch complete: ${successCount}/${imageUrls.length} successful`);
 
   return results;
 }
