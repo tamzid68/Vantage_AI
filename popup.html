@@ -192,6 +192,107 @@
       display: block;
     }
 
+    details.settings {
+      margin-top: 1rem;
+      padding: 0.75rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+
+    details.settings summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #e0e0e0;
+    }
+
+    .field {
+      margin-top: 0.75rem;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 0.25rem;
+      color: #aaa;
+      font-size: 0.8rem;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.5rem;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: #10172a;
+      color: #e0e0e0;
+      font-size: 0.85rem;
+    }
+
+    .field .hint {
+      margin-top: 0.25rem;
+      color: #888;
+      font-size: 0.75rem;
+    }
+
+    .field .hint a {
+      color: #8ea2f5;
+    }
+
+    .key-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .key-row button {
+      flex: 0 0 auto;
+      padding: 0.5rem 0.6rem;
+      font-size: 0.8rem;
+    }
+
+    .settings .button-container {
+      margin-top: 0.75rem;
+    }
+
+    .settings .button-container button {
+      padding: 0.55rem 0.5rem;
+      font-size: 0.85rem;
+    }
+
+    .test-result {
+      margin-top: 0.75rem;
+      padding: 0.6rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      display: none;
+    }
+
+    .test-result.show {
+      display: block;
+    }
+
+    .test-result.ok {
+      background: rgba(74, 222, 128, 0.1);
+      border: 1px solid rgba(74, 222, 128, 0.3);
+      color: #86efac;
+    }
+
+    .test-result.fail {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      color: #fca5a5;
+    }
+
+    .test-result.busy {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #ccc;
+    }
+
     .progress-fill {
       height: 100%;
       background: linear-gradient(90deg, #667eea, #764ba2);
@@ -218,6 +319,11 @@
       <div class="status-value" id="backendStatusValue">Checking...</div>
     </div>
     <div class="status-item">
+      <div class="status-icon pending" id="aiStatus">◯</div>
+      <div class="status-label">AI API Key</div>
+      <div class="status-value" id="aiStatusValue">Checking...</div>
+    </div>
+    <div class="status-item">
       <div class="status-icon pending" id="processingStatus">✓</div>
       <div class="status-label">Processing</div>
       <div class="status-value" id="processingValue">Ready</div>
@@ -233,11 +339,53 @@
     <button class="btn-secondary" id="stopBtn">STOP</button>
   </div>
 
+  <details class="settings" id="settingsPanel">
+    <summary>⚙ Settings &amp; connection test</summary>
+
+    <div class="field">
+      <label for="aiProvider">AI provider</label>
+      <select id="aiProvider">
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="grok">xAI Grok</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="aiKey">Your API key</label>
+      <div class="key-row">
+        <input type="password" id="aiKey" autocomplete="off" spellcheck="false" placeholder="Paste your API key">
+        <button type="button" class="btn-secondary" id="toggleKeyBtn">Show</button>
+      </div>
+      <div class="hint">
+        Stored only in this browser. <a id="keyLink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a key</a>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="aiModel">Model (optional)</label>
+      <input type="text" id="aiModel" autocomplete="off" spellcheck="false" placeholder="Default">
+    </div>
+
+    <div class="field">
+      <label for="backendUrl">Backend server URL</label>
+      <input type="text" id="backendUrl" autocomplete="off" spellcheck="false" placeholder="http://localhost:3000">
+    </div>
+
+    <div class="button-container">
+      <button type="button" class="btn-primary" id="saveSettingsBtn">Save</button>
+      <button type="button" class="btn-secondary" id="testBtn">Test connection</button>
+    </div>
+
+    <div class="test-result" id="testResult" role="status"></div>
+  </details>
+
   <div class="info-text">
     <strong>Instructions:</strong>
-    <br>1. Navigate to Adobe Stock upload page
-    <br>2. Click <strong>START</strong> to begin
-    <br>3. AI will analyze images and fill metadata
+    <br>1. Start the backend server (<strong>npm start</strong>)
+    <br>2. Open <strong>Settings</strong>, enter your API key, click <strong>Test connection</strong>
+    <br>3. Navigate to the Adobe Stock upload page
+    <br>4. Click <strong>START</strong> - AI analyzes images and fills metadata
   </div>
 
   <script type="module" src="popup.js"></script>

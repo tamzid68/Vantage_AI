@@ -3,24 +3,16 @@
  * Handles UI interactions and communication with content script
  */
 
-let checkBackendHealth;
-
-// Try to import, with fallback
-try {
-  const apiModule = await import('./utils/api.js');
-  checkBackendHealth = apiModule.checkBackendHealth;
-} catch (error) {
-  console.error('[Metafyx] Failed to import utils/api.js:', error);
-  // Fallback: create dummy function
-  checkBackendHealth = async () => {
-    try {
-      const response = await fetch('http://localhost:3000/health');
-      return response.ok;
-    } catch {
-      return false;
-    }
-  };
-}
+import {
+  checkBackendHealth,
+  getBackendStatus,
+  getProviderStatus,
+  getAISettings,
+  saveAISettings,
+  getBackendUrl,
+  runSelfTest
+} from './utils/api.js';
+import { CONFIG } from './utils/constants.js';
 
 const DOM = {
   startBtn: document.getElementById('startBtn'),
@@ -33,7 +25,24 @@ const DOM = {
   processingStatus: document.getElementById('processingStatus'),
   processingValue: document.getElementById('processingValue'),
   progressBar: document.getElementById('progressBar'),
-  progressFill: document.getElementById('progressFill')
+  progressFill: document.getElementById('progressFill'),
+  aiStatusValue: document.getElementById('aiStatusValue'),
+  settingsPanel: document.getElementById('settingsPanel'),
+  aiProvider: document.getElementById('aiProvider'),
+  aiKey: document.getElementById('aiKey'),
+  aiModel: document.getElementById('aiModel'),
+  backendUrl: document.getElementById('backendUrl'),
+  keyLink: document.getElementById('keyLink'),
+  toggleKeyBtn: document.getElementById('toggleKeyBtn'),
+  saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+  testBtn: document.getElementById('testBtn'),
+  testResult: document.getElementById('testResult')
+};
+
+const PROVIDER_INFO = {
+  gemini: { keyUrl: 'https://aistudio.google.com/apikey', modelHint: 'gemini-flash-latest' },
+  openai: { keyUrl: 'https://platform.openai.com/api-keys', modelHint: 'gpt-4o' },
+  grok: { keyUrl: 'https://console.x.ai', modelHint: 'grok-2-vision-1212' }
 };
 
 let isProcessing = false;
@@ -107,9 +116,9 @@ async function checkBackendStatus() {
   try {
     updateStatus(DOM.backendStatusValue, 'loading', 'Connecting...');
     
-    const isHealthy = await checkBackendHealth();
-    
-    if (isHealthy) {
+    const status = await getBackendStatus();
+
+    if (status.ok) {
       updateStatus(DOM.backendStatusValue, 'success', 'Connected');
       return true;
     } else {
@@ -125,12 +134,138 @@ async function checkBackendStatus() {
 }
 
 /**
+ * Show whether an API key is available (the user's own, or the server's)
+ */
+async function checkAIKeyStatus() {
+  const settings = await getAISettings();
+  if (settings.apiKey) {
+    updateStatus(DOM.aiStatusValue, 'success', `Your key (${settings.provider || 'default'})`);
+    return true;
+  }
+  const backend = await getBackendStatus();
+  if (backend.ok && backend.serverKeyConfigured) {
+    updateStatus(DOM.aiStatusValue, 'success', 'Server default');
+    return true;
+  }
+  updateStatus(DOM.aiStatusValue, 'error', 'Not set');
+  DOM.settingsPanel.open = true;
+  return false;
+}
+
+/**
  * Initialize status checks on popup open
  */
 async function initializeStatus() {
+  await loadSettingsForm();
   await checkPageStatus();
   await checkBackendStatus();
+  await checkAIKeyStatus();
 }
+
+/**
+ * Settings form
+ */
+function updateProviderHints() {
+  const info = PROVIDER_INFO[DOM.aiProvider.value] || PROVIDER_INFO.gemini;
+  DOM.keyLink.href = info.keyUrl;
+  DOM.aiModel.placeholder = `Default (${info.modelHint})`;
+}
+
+async function loadSettingsForm() {
+  const settings = await getAISettings();
+  DOM.aiProvider.value = PROVIDER_INFO[settings.provider] ? settings.provider : 'gemini';
+  DOM.aiKey.value = settings.apiKey;
+  DOM.aiModel.value = settings.model;
+  const backendUrl = await getBackendUrl();
+  DOM.backendUrl.value = backendUrl === CONFIG.BACKEND_URL ? '' : backendUrl;
+  updateProviderHints();
+}
+
+async function saveSettingsForm() {
+  const backendUrl = DOM.backendUrl.value.trim();
+  if (backendUrl && !/^https?:\/\/[^\s/]+/i.test(backendUrl)) {
+    throw new Error('Backend URL must start with http:// or https://');
+  }
+  await saveAISettings({
+    provider: DOM.aiProvider.value,
+    apiKey: DOM.aiKey.value,
+    model: DOM.aiModel.value,
+    backendUrl
+  });
+}
+
+function showTestResult(kind, text) {
+  DOM.testResult.className = `test-result show ${kind}`;
+  DOM.testResult.textContent = text;
+}
+
+DOM.aiProvider.addEventListener('change', updateProviderHints);
+
+DOM.toggleKeyBtn.addEventListener('click', () => {
+  const reveal = DOM.aiKey.type === 'password';
+  DOM.aiKey.type = reveal ? 'text' : 'password';
+  DOM.toggleKeyBtn.textContent = reveal ? 'Hide' : 'Show';
+});
+
+DOM.saveSettingsBtn.addEventListener('click', async () => {
+  try {
+    await saveSettingsForm();
+    showTestResult('ok', '✓ Settings saved');
+    await checkBackendStatus();
+    await checkAIKeyStatus();
+  } catch (error) {
+    showTestResult('fail', `✕ ${error.message}`);
+  }
+});
+
+/**
+ * Test connection: saves the form, then checks each link of the chain in
+ * order - backend server, API key + model, and a real AI request.
+ */
+DOM.testBtn.addEventListener('click', async () => {
+  DOM.testBtn.disabled = true;
+  const lines = [];
+  const report = (kind, line) => {
+    if (line) lines.push(line);
+    showTestResult(kind, lines.join('\n'));
+  };
+
+  try {
+    await saveSettingsForm();
+
+    report('busy', '⟳ Checking backend server...');
+    lines.pop();
+    const backend = await getBackendStatus();
+    if (!backend.ok) {
+      report('fail', `✕ Backend server not reachable at ${await getBackendUrl()}\n   Start it with "npm start" in the project folder.`);
+      return;
+    }
+    report('busy', '✓ Backend server is running');
+
+    const provider = await getProviderStatus();
+    if (!provider.ok) {
+      report('fail', `✕ API key check failed:\n   ${provider.error}`);
+      return;
+    }
+    report('busy', `✓ API key accepted (${provider.provider}, ${provider.keySource === 'user' ? 'your key' : 'server default key'})`);
+    if (provider.warning) report('busy', `⚠ ${provider.warning}`);
+
+    report('busy', '⟳ Asking the AI to describe a sample image...');
+    lines.pop();
+    const test = await runSelfTest();
+    if (!test.ok) {
+      report('fail', `✕ AI request failed:\n   ${test.error}`);
+      return;
+    }
+    report('ok', `✓ AI answered in ${(test.durationMs / 1000).toFixed(1)}s (${test.model})\n   Title: ${test.data.title}\n   Keywords: ${test.data.keywords.slice(0, 6).join(', ')}...\n\nEverything works. You can press START.`);
+  } catch (error) {
+    report('fail', `✕ ${error.message}`);
+  } finally {
+    DOM.testBtn.disabled = false;
+    checkBackendStatus();
+    checkAIKeyStatus();
+  }
+});
 
 /**
  * Send message to content script
@@ -148,7 +283,12 @@ function sendToContentScript(action, data = {}) {
         { source: 'metafyx-popup', action, ...data },
         (response) => {
           if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
+            const message = chrome.runtime.lastError.message || '';
+            reject(new Error(
+              message.includes('Receiving end does not exist')
+                ? 'Metafyx is not active on this tab - reload the Adobe Stock page and try again.'
+                : message
+            ));
           } else {
             resolve(response);
           }
@@ -179,14 +319,23 @@ DOM.startBtn.addEventListener('click', async () => {
       throw new Error('Backend server is not responding. Please start the Node.js server.');
     }
 
+    // Verify the AI provider (API key + model) once, instead of failing on every image
+    const providerStatus = await getProviderStatus();
+    if (!providerStatus.ok) {
+      throw new Error(providerStatus.error || 'AI provider connection failed - check the backend .env');
+    }
+
     console.log('[Metafyx] Sending startProcessing message to content script');
 
     // Send message to content script
     const response = await sendToContentScript('startProcessing');
 
     if (response && response.success) {
-      updateStatus(DOM.processingValue, 'success', 'Completed');
-      showError('Metadata processing completed!');
+      updateStatus(DOM.processingValue, 'success', response.stopped ? 'Stopped' : 'Completed');
+      showError(`Metadata processing completed: ${response.successCount}/${response.total} images`);
+    } else if (response && response.successCount > 0) {
+      updateStatus(DOM.processingValue, 'error', `${response.successCount}/${response.total} done`);
+      showError(`${response.errorCount} of ${response.total} images failed: ${response.error}`);
     } else {
       throw new Error(response?.error || 'Unknown error occurred');
     }
@@ -238,9 +387,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
 
       case 'processingComplete':
-        updateStatus(DOM.processingValue, 'success', 'Completed');
+        // Final result is reported by the START handler when the content script answers
         DOM.progressBar.classList.remove('show');
-        showError('All images processed successfully!');
         break;
 
       case 'processingError':

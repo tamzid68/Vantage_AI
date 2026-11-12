@@ -138,7 +138,7 @@ export function findImageUrl(container) {
   if (allImages.length > 0) {
     for (const img of allImages) {
       const src = extractSrc(img);
-      if (src && src.startsWith('http')) {
+      if (src && /^(https?:|blob:|data:image\/)/.test(src)) {
         console.log('[Metafyx] Found image URL from img:', src.substring(0, 80));
         return src;
       }
@@ -320,11 +320,10 @@ export function isItemSelected(item) {
 export function findSaveButton(container) {
   // Try multiple selectors for save button
   const selectors = [
+    'button[data-t="save-work"]',
     'button[aria-label*="Save" i]',
-    'button:contains("Save")',
     'button[data-testid*="save"]',
     'button[class*="save"]',
-    'button:has-text("Save")',
     '[role="button"][aria-label*="Save" i]',
     'button[type="button"]:not([type="reset"]):not([class*="cancel"])'
   ];

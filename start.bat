@@ -44,15 +44,9 @@ if not exist ".env" (
         copy .env.example .env
         echo ✓ .env file created
         echo.
-        echo ⚠️  IMPORTANT: Edit .env file and add your API key!
+        echo Enter your API key in the extension popup ^(Settings^),
+        echo or set a shared fallback key in .env.
         echo.
-        echo Steps:
-        echo 1. Open .env in your text editor
-        echo 2. Set AI_PROVIDER (openai or gemini)
-        echo 3. Add your API_KEY
-        echo 4. Save the file
-        echo.
-        pause
     ) else (
         echo ❌ ERROR: .env.example file not found!
         pause
